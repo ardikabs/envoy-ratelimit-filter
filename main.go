@@ -8,7 +8,7 @@ import (
 
 var sharedStore = ratelimit.NewStore()
 
-func ratelimitWrapper(next gonvoy.Handler) gonvoy.Handler {
+func ratelimitFilter(next gonvoy.Handler) gonvoy.Handler {
 	return gonvoy.Handler(func(c gonvoy.Context) error {
 		cfg, err := gonvoy.ConfigOf[*ratelimit.Config](c)
 		if err != nil || cfg == nil {
@@ -20,8 +20,11 @@ func ratelimitWrapper(next gonvoy.Handler) gonvoy.Handler {
 
 func init() {
 	envoy.Handle("ratelimit",
-		gonvoy.Use(ratelimitWrapper),
+		gonvoy.Use(ratelimitFilter),
 		gonvoy.WithConfig(new(ratelimit.Config)),
+		// Route config replaces the listener default outright (no field
+		// merging): a route with its own limit is authoritative for it.
+		gonvoy.RouteConfigWins(),
 		gonvoy.MetricPrefix("ratelimit_"),
 	)
 }

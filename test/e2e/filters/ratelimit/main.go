@@ -24,6 +24,9 @@ func init() {
 	envoy.Handle("ratelimit",
 		gonvoy.Use(ratelimitWrapper),
 		gonvoy.WithConfig(new(ratelimit.Config)),
+		// Route config replaces the listener default outright (no field
+		// merging): a route with its own limit is authoritative for it.
+		gonvoy.RouteConfigWins(),
 		gonvoy.MetricPrefix("ratelimit_"),
 	)
 }

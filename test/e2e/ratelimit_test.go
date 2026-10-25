@@ -23,17 +23,23 @@ var RatelimitCases = []suite.TestCase{
 			defer stop()
 			base := kit.GetEnvoyHost()
 
-			get := func(path, apiKey string) *http.Response {
+			getH := func(path string, headers map[string]string) *http.Response {
 				req, err := http.NewRequest(http.MethodGet, base+path, nil)
 				require.NoError(t, err)
-				if apiKey != "" {
-					req.Header.Set("x-api-key", apiKey)
+				for k, v := range headers {
+					if v != "" {
+						req.Header.Set(k, v)
+					}
 				}
 				resp, err := http.DefaultClient.Do(req)
 				require.NoError(t, err)
 				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 				return resp
+			}
+
+			get := func(path, apiKey string) *http.Response {
+				return getH(path, map[string]string{"x-api-key": apiKey})
 			}
 
 			t.Run("global N+1 denied with headers", func(t *testing.T) {
@@ -78,6 +84,39 @@ var RatelimitCases = []suite.TestCase{
 				respB := get("/", "iso-b")
 				require.Equal(t, http.StatusOK, respB.StatusCode)
 				require.NotEqual(t, "0", respB.Header.Get("RateLimit-Remaining"))
+			})
+
+			t.Run("listener keyed rule selected by matcher", func(t *testing.T) {
+				hdr := map[string]string{"x-plan": "legacy", "x-api-key": "legacy-key"}
+				resp := getH("/", hdr)
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+				require.Equal(t, "1", resp.Header.Get("RateLimit-Limit"))
+
+				resp = getH("/", hdr)
+				require.Equal(t, 429, resp.StatusCode)
+				require.Equal(t, "1", resp.Header.Get("RateLimit-Limit"))
+				require.Equal(t, "0", resp.Header.Get("RateLimit-Remaining"))
+
+				// Same key without the matcher hits the default instead.
+				resp = get("/", "legacy-key")
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+				require.Equal(t, "5", resp.Header.Get("RateLimit-Limit"))
+			})
+
+			t.Run("per-route multi keyed rules", func(t *testing.T) {
+				hdr := map[string]string{"x-tenant-id": "tenant-1"}
+				resp := getH("/premium", hdr)
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+				require.Equal(t, "1", resp.Header.Get("RateLimit-Limit"))
+
+				resp = getH("/premium", hdr)
+				require.Equal(t, 429, resp.StatusCode)
+				require.Equal(t, "1", resp.Header.Get("RateLimit-Limit"))
+
+				// Same route without the tenant matcher hits the route default.
+				resp = get("/premium", "route-multi-key")
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+				require.Equal(t, "2", resp.Header.Get("RateLimit-Limit"))
 			})
 
 			t.Run("backoff headers parseable", func(t *testing.T) {

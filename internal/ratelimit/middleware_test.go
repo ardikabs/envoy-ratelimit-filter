@@ -66,11 +66,52 @@ func TestMiddleware_HeaderNameCaseInsensitive(t *testing.T) {
 	require.Equal(t, 429, w2.Status())
 }
 
-func TestMiddleware_InvalidRouteRuleFallsBackToDefault(t *testing.T) {
-	cfg, _ := ParseConfig([]byte(`{"default":{"limit":5,"interval":"60s"},"routes":{"bad":{"limit":0,"interval":"60s"}}}`))
-	rule, scope := cfg.Resolve("bad")
-	require.Equal(t, "global", scope)
-	require.Equal(t, 5, rule.Limit)
+func TestMiddleware_InvalidConfigPassesThrough(t *testing.T) {
+	cfg, _ := ParseConfig([]byte(`{"default":{"limit":0,"interval":"60s"}}`))
+	h := RateLimit(cfg, NewStore())(gonvoy.Handler(func(c gonvoy.Context) error { return nil }))
+	r, _ := http.NewRequest("GET", "http://example.com/", nil)
+	w := newRecordingWriter()
+	h.ServeHTTP(w, r)
+	require.Equal(t, 0, w.Status())
+	require.Empty(t, w.Header().Get("RateLimit-Limit"))
+}
+
+func TestMiddleware_SelectsMatchingKeyedRule(t *testing.T) {
+	cfg, _ := ParseConfig([]byte(`{
+		"default": {"limit":100,"interval":"60s"},
+		"rules": {"free": {"limit":1,"interval":"60s","match_headers":[{"name":"x-plan","exact":"free"}]}}
+	}`))
+	h := RateLimit(cfg, NewStore())(gonvoy.Handler(func(c gonvoy.Context) error { return nil }))
+
+	r1, _ := http.NewRequest("GET", "http://example.com/", nil)
+	r1.Header.Set("x-plan", "free")
+	w1 := newRecordingWriter()
+	h.ServeHTTP(w1, r1)
+	require.Equal(t, "1", w1.Header().Get("RateLimit-Limit"))
+
+	// Same free-plan bucket exhausted: 429 with the rule's limit.
+	r2, _ := http.NewRequest("GET", "http://example.com/", nil)
+	r2.Header.Set("x-plan", "free")
+	w2 := newRecordingWriter()
+	h.ServeHTTP(w2, r2)
+	require.Equal(t, 429, w2.Status())
+	require.Equal(t, "1", w2.Header().Get("RateLimit-Limit"))
+
+	// No matcher hit: default applies, untouched by free-plan traffic.
+	r3, _ := http.NewRequest("GET", "http://example.com/", nil)
+	w3 := newRecordingWriter()
+	h.ServeHTTP(w3, r3)
+	require.Equal(t, "100", w3.Header().Get("RateLimit-Limit"))
+}
+
+func TestMiddleware_DefaultAppliesWithoutBucketHeader(t *testing.T) {
+	cfg, _ := ParseConfig([]byte(`{"default":{"limit":1,"interval":"60s","bucket_key":"x-api-key"}}`))
+	h := RateLimit(cfg, NewStore())(gonvoy.Handler(func(c gonvoy.Context) error { return nil }))
+	// No headers at all: default still enforces via the shared bucket.
+	r, _ := http.NewRequest("GET", "http://example.com/", nil)
+	w := newRecordingWriter()
+	h.ServeHTTP(w, r)
+	require.Equal(t, "1", w.Header().Get("RateLimit-Limit"))
 }
 
 func TestMiddleware_OverwritesUpstreamHeaders(t *testing.T) {

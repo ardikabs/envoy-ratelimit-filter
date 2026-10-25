@@ -33,11 +33,14 @@ static_resources:
                             limit: 5
                             interval: "60s"
                             bucket_key: "x-api-key"
-                          routes:
-                            premium-route:
-                              limit: 2
+                          rules:
+                            legacy:
+                              limit: 1
                               interval: "60s"
                               bucket_key: "x-api-key"
+                              match_headers:
+                                - name: "x-plan"
+                                  exact: "legacy"
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -54,6 +57,23 @@ static_resources:
                             status: 200
                             body:
                               inline_string: "premium-ok"
+                          typed_per_filter_config:
+                            envoy.filters.http.golang:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.ConfigsPerRoute
+                              plugins_config:
+                                ratelimit:
+                                  config:
+                                    "@type": type.googleapis.com/xds.type.v3.TypedStruct
+                                    value:
+                                      default:
+                                        limit: 2
+                                        interval: "60s"
+                                        bucket_key: "x-api-key"
+                                      rules:
+                                        tenant:
+                                          limit: 1
+                                          interval: "60s"
+                                          bucket_key: "x-tenant-id"
                         - name: global-route
                           match:
                             prefix: "/"

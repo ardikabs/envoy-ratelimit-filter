@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,11 +66,11 @@ func (m HeaderMatch) Matches(h http.Header) bool {
 	return true
 }
 
-// Rule is one limit scope.
+// Rule is one limit scope: a default or one named keyed scenario.
 type Rule struct {
-	Limit        int          `json:"limit"`
-	Interval     DurationSec  `json:"interval"`
-	BucketKey    string       `json:"bucket_key"`
+	Limit        int           `json:"limit"`
+	Interval     DurationSec   `json:"interval"`
+	BucketKey    string        `json:"bucket_key"`
 	MatchHeaders []HeaderMatch `json:"match_headers,omitempty"`
 }
 
@@ -77,8 +78,8 @@ func (r Rule) valid() bool {
 	return r.Limit > 0 && time.Duration(r.Interval) > 0
 }
 
-// MatchesHeaders reports whether headers satisfy the rule's match set.
-// Empty MatchHeaders means always match (OR across entries otherwise).
+// MatchesHeaders reports whether headers satisfy the rule's match set
+// (OR across entries). Empty MatchHeaders means always match.
 func (r Rule) MatchesHeaders(h http.Header) bool {
 	if len(r.MatchHeaders) == 0 {
 		return true
@@ -91,37 +92,93 @@ func (r Rule) MatchesHeaders(h http.Header) bool {
 	return false
 }
 
-// Config holds the global default plus per-route overrides keyed by Envoy route name.
+// Config is a keyed set of limit rules: the single typed plugin config.
+//
+//   - "default" is the reserved fallback. It applies to every request that
+//     matches no other rule (and to every route without a per-route
+//     override). Its match_headers, if any, are ignored.
+//   - Every other key names one scenario (e.g. "free-plan", "per-tenant").
+//     A keyed rule must carry a valid limit/interval; invalid entries are
+//     skipped. Selection, in sorted key order: explicit match_headers (when
+//     declared) must match; otherwise the bucket_key header's presence
+//     selects the rule — but only when the bucket partitions differently
+//     from the default's (comparison is case-insensitive). A rule sharing
+//     the default's bucket must declare match_headers; without them it is
+//     skipped and default is referred.
+//
+// Per-route overrides use the same struct via Envoy's typed_per_filter_config
+// and replace the listener config outright (RouteConfigWins).
 type Config struct {
 	Default Rule            `json:"default"`
-	Routes  map[string]Rule `json:"routes,omitempty"`
+	Rules   map[string]Rule `json:"rules,omitempty"`
+}
+
+// DefaultRuleKey is the reserved fallback key. A "default" entry inside
+// Rules is ignored to protect the reserved word.
+const DefaultRuleKey = "default"
+
+func (c Config) valid() bool {
+	return c.Default.valid()
 }
 
 // ParseConfig parses and returns config; malformed JSON errors.
-// Invalid limits/intervals are not errors here — callers treat invalid rules as no-limiting (fail-open per scope).
+// Invalid limits/intervals are not errors here — callers treat invalid
+// configs as no-limiting (fail-open).
 func ParseConfig(data []byte) (*Config, error) {
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, err
 	}
-	if c.Routes == nil {
-		c.Routes = map[string]Rule{}
+	if c.Rules == nil {
+		c.Rules = map[string]Rule{}
 	}
 	return &c, nil
 }
 
-// Resolve returns the authoritative rule for routeName, or default when missing/invalid.
-// scopeKey is routeName for per-route hits, "global" otherwise.
-func (c *Config) Resolve(routeName string) (*Rule, string) {
+// Resolve picks the authoritative rule for a request: the first keyed rule
+// (sorted key order) that is valid, declares matchers, and matches h — else
+// the default. scopeKey identifies the counter as route/ruleKey.
+func (c *Config) Resolve(route string, h http.Header) (*Rule, string) {
 	if c == nil {
-		return nil, "global"
+		return nil, "global/" + DefaultRuleKey
 	}
-	if routeName != "" {
-		if r, ok := c.Routes[routeName]; ok && r.valid() {
-			rr := r
-			return &rr, routeName
+	if route == "" {
+		route = "global"
+	}
+	keys := make([]string, 0, len(c.Rules))
+	for k := range c.Rules {
+		if k == DefaultRuleKey {
+			continue
 		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		r := c.Rules[k]
+		if !r.valid() {
+			continue
+		}
+		if len(r.MatchHeaders) > 0 {
+			if r.MatchesHeaders(h) {
+				rr := r
+				return &rr, route + "/" + k
+			}
+			continue
+		}
+		// No matchers: the bucket_key header's presence selects the rule,
+		// but only when it partitions differently from the default. A rule
+		// sharing the default's bucket (header names are case-insensitive)
+		// cannot distinguish itself by presence, so it must declare
+		// match_headers; otherwise it is skipped and default is referred.
+		if r.BucketKey == "" || strings.EqualFold(r.BucketKey, c.Default.BucketKey) {
+			continue
+		}
+		if h.Get(r.BucketKey) == "" {
+			continue
+		}
+		rr := r
+		return &rr, route + "/" + k
 	}
 	rr := c.Default
-	return &rr, "global"
+	return &rr, route + "/" + DefaultRuleKey
 }

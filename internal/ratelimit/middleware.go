@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/ardikabs/gonvoy"
@@ -29,7 +30,11 @@ func itoa(n int) string {
 }
 
 // RateLimit returns a middleware enforcing cfg against store.
-// Fail-open: any invalid config/rule or panic passes through via next(c).
+// cfg is the already-merged rule for this route: the listener default,
+// or the route's typed_per_filter_config override (RouteConfigWins).
+// Counters stay per (route, bucket): scope is the Envoy route name so two
+// routes with identical limits still count independently.
+// Fail-open: any invalid config or panic passes through via next(c).
 func RateLimit(cfg *Config, store *Store) gonvoy.Middleware {
 	return func(next gonvoy.Handler) gonvoy.Handler {
 		return gonvoy.Handler(func(c gonvoy.Context) (err error) {
@@ -42,16 +47,18 @@ func RateLimit(cfg *Config, store *Store) gonvoy.Middleware {
 			if cfg == nil || store == nil {
 				return next(c)
 			}
+			var hdr http.Header
+			if req := c.Request(); req != nil {
+				hdr = req.Header
+			}
 			routeName, _ := c.Attr("xds.route_name", "")
-			rule, scope := cfg.Resolve(routeName)
+			rule, scope := cfg.Resolve(routeName, hdr)
 			if rule == nil || !rule.valid() {
 				return next(c)
 			}
-			if req := c.Request(); req != nil {
-				if !rule.MatchesHeaders(req.Header) {
-					return next(c)
-				}
-			}
+			// Note: no Matches re-check here. Resolve already selected the
+			// authoritative rule (first matching keyed rule, else default),
+			// and default applies unconditionally.
 			bucket := ""
 			if rule.BucketKey != "" {
 				bucket = c.Header(rule.BucketKey)

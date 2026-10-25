@@ -3,10 +3,16 @@
 Adoption demo: one `filter.so`, one global default plus per-route override,
 standard `RateLimit-*` / `Retry-After` headers.
 
-Config lives in `playground/envoy.yaml`:
+Config lives in `playground/envoy.yaml` — one typed config with a reserved
+`default` fallback plus keyed `rules` (first sorted-key match wins):
 
-- default: 5 req / 60s, bucket by `x-api-key` (absent key shares one bucket)
-- route `premium-route` (`/premium`): 2 req / 60s, same bucket key
+- listener `plugin_config`: `default` 5 req / 60s by `x-api-key`
+  (absent key shares one bucket), plus keyed rule `legacy`: 1 req / 60s
+  when `x-plan: legacy`.
+- route `premium-route` (`/premium`) `typed_per_filter_config` override
+  (replaces the listener config outright via `RouteConfigWins`, no merging):
+  `default` 2 req / 60s by `x-api-key`, plus keyed rule `tenant`:
+  1 req / 60s by `x-tenant-id` when that header is present.
 
 ## Run
 
