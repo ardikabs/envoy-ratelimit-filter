@@ -3,7 +3,7 @@ module github.com/ardikabs/envoy-ratelimit-filter
 go 1.26.10
 
 require (
-	github.com/ardikabs/gonvoy v0.4.1-0.20261025063629-248bc5dacb81
+	github.com/ardikabs/gonvoy v0.4.1-0.20261025120724-dabc4a7487df
 	github.com/stretchr/testify v1.12.1
 )
 

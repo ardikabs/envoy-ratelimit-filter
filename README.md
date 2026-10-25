@@ -1,6 +1,6 @@
 # envoy-ratelimit-filter
 
-An implementation of an Envoy HTTP Filter built on top of the [Gonvoy](https://github.com/ardikabs/gonvoy) framework (`248bc5d`, Envoy v1.40 line): a header-driven local rate limiter.
+An implementation of an Envoy HTTP Filter built on top of the [Gonvoy](https://github.com/ardikabs/gonvoy) framework (Envoy v1.40 line): a header-driven local rate limiter.
 
 Yet another opinionated local rate limiter for Envoy: no external services, fixed-window counters live in-process.
 

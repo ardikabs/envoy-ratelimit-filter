@@ -11,6 +11,7 @@ import (
 const sharedBucket = "__shared__"
 
 // SetRateLimitHeaders sets the exact standard headers (overwrites any upstream values).
+// Retry-After is intentionally excluded: it is only set on 429 responses.
 func SetRateLimitHeaders(c gonvoy.Context, limit, remaining, resetSec, windowSec int) {
 	if windowSec < 1 {
 		windowSec = 1
@@ -18,11 +19,12 @@ func SetRateLimitHeaders(c gonvoy.Context, limit, remaining, resetSec, windowSec
 	if resetSec < 1 {
 		resetSec = 1
 	}
-	c.SetHeader("RateLimit-Limit", itoa(limit))
-	c.SetHeader("RateLimit-Remaining", itoa(remaining))
-	c.SetHeader("RateLimit-Reset", itoa(resetSec))
-	c.SetHeader("RateLimit-Policy", fmt.Sprintf("%d;w=%d", limit, windowSec))
-	c.SetHeader("RateLimit", fmt.Sprintf("limit=%d, remaining=%d, reset=%d", limit, remaining, resetSec))
+
+	c.Response().Header.Set("RateLimit-Limit", itoa(limit))
+	c.Response().Header.Set("RateLimit-Remaining", itoa(remaining))
+	c.Response().Header.Set("RateLimit-Reset", itoa(resetSec))
+	c.Response().Header.Set("RateLimit-Policy", fmt.Sprintf("%d;w=%d", limit, windowSec))
+	c.Response().Header.Set("RateLimit", fmt.Sprintf("limit=%d, remaining=%d, reset=%d", limit, remaining, resetSec))
 }
 
 func itoa(n int) string {
@@ -61,7 +63,7 @@ func RateLimit(cfg *Config, store *Store) gonvoy.Middleware {
 			// and default applies unconditionally.
 			bucket := ""
 			if rule.BucketKey != "" {
-				bucket = c.Header(rule.BucketKey)
+				bucket = c.Request().Header.Get(rule.BucketKey)
 			}
 			if bucket == "" {
 				bucket = sharedBucket
@@ -74,7 +76,7 @@ func RateLimit(cfg *Config, store *Store) gonvoy.Middleware {
 			allowed, remaining, resetSec := store.Allow(scope, bucket, rule.Limit, interval, time.Now())
 			if !allowed {
 				SetRateLimitHeaders(c, rule.Limit, 0, resetSec, windowSec)
-				c.SetHeader("Retry-After", itoa(resetSec))
+				c.Response().Header.Set("Retry-After", itoa(resetSec))
 				c.Stats().Counter("ratelimit_denied_total").Increment(1)
 				c.Log().Info("rate limit exceeded", "scope", scope, "limit", rule.Limit)
 				return c.String(429, "rate limit exceeded")

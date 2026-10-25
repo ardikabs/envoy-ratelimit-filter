@@ -117,7 +117,7 @@ func TestMiddleware_DefaultAppliesWithoutBucketHeader(t *testing.T) {
 func TestMiddleware_OverwritesUpstreamHeaders(t *testing.T) {
 	cfg, _ := ParseConfig([]byte(`{"default":{"limit":10,"interval":"60s"}}`))
 	h := RateLimit(cfg, NewStore())(gonvoy.Handler(func(c gonvoy.Context) error {
-		c.SetHeader("RateLimit-Limit", "999")
+		c.Response().Header.Set("RateLimit-Limit", "999")
 		return nil
 	}))
 	r, _ := http.NewRequest("GET", "http://example.com/", nil)
